@@ -1,0 +1,134 @@
+#!/bin/bash
+
+# Copyright (c) 2021  Westermo Network Technologies AB
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
+TMPDIR=""
+TMPBASE="/tmp"
+WORKDIR=""
+OUTPUT=""
+SIGNFILE=""
+
+usage() {
+    >&2 echo "Usage: $0 [OPTIONS] SQFS-IMAGE"
+    >&2 echo ""
+    >&2 echo " Options:"
+    >&2 echo "  -o PATH   Output file (default is SQFS-IMAGE.bin)"
+    >&2 echo "  -s SIGN   Signature of SQFS-IMAGE (sha256 digest)"
+    >&2 echo "  -t PATH   Base path for temporary work directory (default $TMPBASE)"
+    >&2 echo "  -w PATH   Custom work dir (won't be removed)"
+    >&2 echo "  -h        Help (this text)"
+    exit 1
+}
+
+fatal() {
+    >&2 echo "$1"
+    exit 1
+}
+
+cleanup() {
+    if [ -z "$TMPDIR" ]; then
+        return
+    fi
+
+    # Sanity check (can't be to careful with rm -rf)
+    case "$TMPDIR" in "$TMPBASE"/sqsq-image.*)
+        rm -rf -- "$TMPDIR"
+    esac
+}
+trap cleanup EXIT
+
+check_cmd() {
+    if ! command -v "$1" &> /dev/null; then
+        fatal "Error, required tool $1 is missing"
+    fi
+}
+
+while getopts "o:s:t:w:h" arg; do
+    case $arg in
+        o)
+            OUTPUT="$OPTARG"
+            ;;
+        s)
+            SIGNFILE="$OPTARG"
+            ;;
+        t)
+            TMPBASE="$OPTARG"
+            ;;
+        w)
+            WORKDIR="$OPTARG"
+            ;;
+        h)
+            usage
+            ;;
+    esac
+done
+
+shift $(($OPTIND - 1))
+if [ $# -ne 1 ]; then
+    usage
+fi
+
+input="$1"
+if [ -z "$input" ]; then
+    usage
+fi
+
+check_cmd "mksquashfs"
+check_cmd "sha256sum"
+
+if [ ! -f "$input" ]; then
+    fatal "Input file \"$1\" not found"
+fi
+
+if [ -z "$WORKDIR" ]; then
+    TMPDIR="$(mktemp -d "$TMPBASE"/sqsq-image.XXXXXXXXXX)"
+    WORKDIR="$TMPDIR"
+else
+    if [ -e "$WORKDIR" ]; then
+        # It's dangerous to continue as mksquashfs duplicates if files exist (foo -> foo_1)
+        fatal "Error, custom workdir already exist, aborting"
+    fi
+fi
+mkdir -p "$WORKDIR/meta"
+
+if [ -z "$OUTPUT" ]; then
+    OUTPUT="$input.bin"
+fi
+
+>&2 echo "Attempting to create $OUTPUT from $input"
+
+if [ ! -z "$SIGNFILE" ]; then
+    if [ ! -f "$SIGNFILE" ]; then
+        fatal "Error, signature file not found"
+    fi
+    cp "$SIGNFILE" "$WORKDIR/meta/signature"
+fi
+
+cat $input | sha256sum | cut -d " " -f1 > "$WORKDIR/meta/sha256sum"
+if ! mksquashfs "$WORKDIR/meta"/* "$WORKDIR/meta.sqfs" \
+    -no-xattrs -comp xz -all-root -b 131072 >/dev/null; then
+    fatal "Error, creating meta squashfs partition"
+fi
+
+if ! cat "$input" "$WORKDIR/meta.sqfs" > "$OUTPUT"; then
+    fatal "Error, creating output file $OUTPUT"
+fi
+>&2 echo "Successfully created $OUTPUT"

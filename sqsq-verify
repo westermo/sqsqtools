@@ -1,0 +1,243 @@
+#!/bin/bash
+
+# Copyright (c) 2021  Westermo Network Technologies AB
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
+SCRIPTPATH="$(cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P)"
+TMPDIR=""
+TMPBASE="/tmp"
+WORKDIR=""
+LOOPBACK=""
+MOUNTED=""
+NUMBER=""
+TOOL="sqsq-image"
+CERTFILE=""
+
+usage() {
+    >&2 echo "Usage: $0 [OPTIONS] SQSQ-IMAGE"
+    >&2 echo ""
+    >&2 echo " Options:"
+    >&2 echo "  -c CERT  Validate signature against public certificate"
+    >&2 echo "  -l       Do loopback mount instead of unsquashfs"
+    >&2 echo "  -n NUMB  Verify filesystem number NUM"
+    >&2 echo "  -t PATH  Base path for temporary work directory (default $TMPBASE)"
+    >&2 echo "  -w PATH  Custom work dir (won't be removed)"
+    >&2 echo "  -h       Help (this text)"
+    exit 1
+}
+
+fatal() {
+    >&2 echo "$1"
+    exit 1
+}
+
+cleanup() {
+    if [ ! -z "$MOUNTED" ]; then
+        umount "$WORKDIR/meta"
+    fi
+
+    if [ -z "$TMPDIR" ]; then
+        return
+    fi
+
+    # Sanity check, can't be to careful with rm -rf.
+    case "$TMPDIR" in "$TMPBASE"/sqsq-image.*)
+        rm -rf -- "$TMPDIR"
+    esac
+}
+trap cleanup EXIT
+
+check_cmd() {
+    if ! command -v "$1" &> /dev/null; then
+        fatal "Error, required tool $1 is missing$2"
+    fi
+}
+
+find_sqsq_image() {
+    if command -v "$TOOL" &> /dev/null; then
+        return
+    fi
+
+    if [ -e "$SCRIPTPATH/sqsq-image" ]; then
+        TOOL="$SCRIPTPATH/sqsq-image"
+        return
+    fi
+
+    fatal "sqsq-image not installed or found locally"
+}
+
+check_signature() {
+    input=$1
+    offset=$2
+    size=$3
+    cert=$4
+    sign=$5
+
+    if [ ! -e "$sign" ]; then
+        fatal "Signature  : Unsigned"
+    fi
+
+    dd if="$input" bs=4096 skip="$offset" count="$size" 2>/dev/null | \
+        openssl dgst -sha256 -verify "$cert" -signature "$sign" &>/dev/null
+
+    if [ $? -eq 0 ]; then
+        fatal "Signature  : Signed"
+    else
+        fatal "Signature  : Invalid"
+    fi
+}
+
+check_filesystem() {
+    input="$1"
+    num=$2
+
+
+    meta_nr=$(($num * 2))
+    data_nr=$(($num * 2 - 1))
+
+    offset=$($TOOL -b -n $meta_nr offset "$input")
+    size=$($TOOL -b -n $meta_nr size "$input")
+
+    if ! dd if="$input" bs=4096 skip="$offset" of="$WORKDIR/meta.sqfs" count="$size" 2>/dev/null; then
+        fatal "Error, extracting meta.sqfs file"
+    fi
+
+    if [ -z "$LOOPBACK" ]; then
+        # rm -rf /meta sanity guard
+        if ! [ -z "$WORKDIR" ]; then
+            rm -rf "$WORKDIR/meta"
+        fi
+
+        if ! unsquashfs -d "$WORKDIR/meta" "$WORKDIR/meta.sqfs" >/dev/null; then
+            fatal "Error, unpacking meta squashfs partition"
+        fi
+    else
+        mkdir -p "$WORKDIR/meta"
+        if ! mount -o loop "$WORKDIR/meta.sqfs" "$WORKDIR/meta"; then
+            fatal "Error, loopback mounting meta filesystem"
+        fi
+        MOUNTED="yes"
+    fi
+
+    offset=$($TOOL -b -n $data_nr offset "$input")
+    size=$($TOOL -b -n $data_nr size "$input")
+    echo "Blocks     : $size"
+
+    sha256sum="$(dd if="$input" bs=4096 skip="$offset" count="$size" 2>/dev/null | sha256sum | cut -d " " -f1)"
+
+    if [[ "$sha256sum" = "$(cat "$WORKDIR/meta/sha256sum" 2>/dev/null)" ]]; then
+        echo "Sha256sum  : OK (${sha256sum:0:12}...)"
+    else
+        fatal "Sha256sum  : Invalid"
+    fi
+
+    if [ ! -z "$CERTFILE" ]; then
+        check_signature "$input" "$offset" "$size" "$CERTFILE" "$WORKDIR/meta/signature"
+    else
+        echo "Signature  : Unchecked"
+    fi
+
+    if [ ! -z "$MOUNTED" ]; then
+        if umount "$WORKDIR/meta"; then
+            MOUNTED=""
+        fi
+    fi
+
+}
+
+while getopts "c:ln:t:w:h" arg; do
+    case $arg in
+        c)
+            CERTFILE="$OPTARG"
+            ;;
+        l)
+            LOOPBACK="yes"
+            ;;
+        n)
+            NUMBER="$OPTARG"
+            ;;
+        t)
+            TMPBASE="$OPTARG"
+            ;;
+        w)
+            WORKDIR="$OPTARG"
+            ;;
+        h)
+            usage
+            ;;
+    esac
+done
+
+shift $(($OPTIND - 1))
+if [ $# -ne 1 ]; then
+    usage
+fi
+
+input="$1"
+if [ -z "$input" ]; then
+    usage
+fi
+
+check_cmd "sha256sum"
+if [ -z "$LOOPBACK" ]; then
+    check_cmd "unsquashfs" " (use -l for loopback)"
+fi
+find_sqsq_image
+
+if [ ! -e "$input" ]; then
+    fatal "Input file \"$1\" not found"
+fi
+
+if [ -z "$WORKDIR" ]; then
+    TMPDIR="$(mktemp -d "$TMPBASE"/sqsq-image.XXXXXXXXXX)"
+    WORKDIR="$TMPDIR"
+fi
+
+count=$($TOOL count $input 2>/dev/null) # TODO
+case "$count" in
+    ''|*[!0-9]*)
+        fatal "Error, got unexpected output from sqsq-image"
+esac
+
+if [ $count -eq 0 ]; then
+    fatal "Error, no squashfs filesystems found in \"$input\""
+fi
+
+if [ $count -eq 1 ]; then
+    fatal "Error, input doesn't look like a sqsq file"
+fi
+
+mkdir -p "$WORKDIR"
+
+if [ -z $NUMBER ]; then
+    for i in $(seq 1 $(($count / 2 ))); do
+        if [ $i -ne 1 ]; then
+            printf "\n"
+        fi
+        echo "Filesystem $i"
+        echo "------------"
+        check_filesystem "$input" $i
+    done
+else
+    if [ $(($NUMBER * 2)) -gt $count ]; then
+        fatal "Error, filesystem number $NUMBER not found in image"
+    fi
+    check_filesystem "$input" $NUMBER
+fi
