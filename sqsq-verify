@@ -98,7 +98,7 @@ check_signature() {
         openssl dgst -sha256 -verify "$cert" -signature "$sign" &>/dev/null
 
     if [ $? -eq 0 ]; then
-        fatal "Signature  : Signed"
+        echo "Signature  : Signed"
     else
         fatal "Signature  : Invalid"
     fi
