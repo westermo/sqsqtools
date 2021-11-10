@@ -75,13 +75,13 @@ while getopts "o:s:t:w:h" arg; do
         w)
             WORKDIR="$OPTARG"
             ;;
-        h)
+        h|*)
             usage
             ;;
     esac
 done
 
-shift $(($OPTIND - 1))
+shift $((OPTIND - 1))
 if [ $# -ne 1 ]; then
     usage
 fi
@@ -115,14 +115,14 @@ fi
 
 >&2 echo "Attempting to create $OUTPUT from $input"
 
-if [ ! -z "$SIGNFILE" ]; then
+if [ -n "$SIGNFILE" ]; then
     if [ ! -f "$SIGNFILE" ]; then
         fatal "Error, signature file not found"
     fi
     cp "$SIGNFILE" "$WORKDIR/meta/signature"
 fi
 
-cat $input | sha256sum | cut -d " " -f1 > "$WORKDIR/meta/sha256sum"
+sha256sum "$input" | cut -d " " -f1 > "$WORKDIR/meta/sha256sum"
 if ! mksquashfs "$WORKDIR/meta"/* "$WORKDIR/meta.sqfs" \
     -no-xattrs -comp xz -all-root -b 131072 >/dev/null; then
     fatal "Error, creating meta squashfs partition"
