@@ -19,6 +19,8 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
+#
+# shellcheck disable=SC2086
 
 SCRIPTPATH="$(cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P)"
 TMPDIR=""
@@ -49,7 +51,7 @@ fatal() {
 }
 
 cleanup() {
-    if [ ! -z "$MOUNTED" ]; then
+    if [ -n "$MOUNTED" ]; then
         umount "$WORKDIR/meta"
     fi
 
@@ -121,7 +123,7 @@ check_filesystem() {
 
     if [ -z "$LOOPBACK" ]; then
         # rm -rf /meta sanity guard
-        if ! [ -z "$WORKDIR" ]; then
+        if [ -n "$WORKDIR" ]; then
             rm -rf "$WORKDIR/meta"
         fi
 
@@ -148,13 +150,13 @@ check_filesystem() {
         fatal "Sha256sum  : Invalid"
     fi
 
-    if [ ! -z "$CERTFILE" ]; then
+    if [ -n "$CERTFILE" ]; then
         check_signature "$input" "$offset" "$size" "$CERTFILE" "$WORKDIR/meta/signature"
     else
         echo "Signature  : Unchecked"
     fi
 
-    if [ ! -z "$MOUNTED" ]; then
+    if [ -n "$MOUNTED" ]; then
         if umount "$WORKDIR/meta"; then
             MOUNTED=""
         fi
@@ -179,13 +181,13 @@ while getopts "c:ln:t:w:h" arg; do
         w)
             WORKDIR="$OPTARG"
             ;;
-        h)
+        h|*)
             usage
             ;;
     esac
 done
 
-shift $(($OPTIND - 1))
+shift $((OPTIND - 1))
 if [ $# -ne 1 ]; then
     usage
 fi
@@ -210,7 +212,7 @@ if [ -z "$WORKDIR" ]; then
     WORKDIR="$TMPDIR"
 fi
 
-count=$($TOOL count $input 2>/dev/null) # TODO
+count=$($TOOL count "$input" 2>/dev/null) # TODO
 case "$count" in
     ''|*[!0-9]*)
         fatal "Error, got unexpected output from sqsq-image"
@@ -227,7 +229,7 @@ fi
 mkdir -p "$WORKDIR"
 
 if [ -z $NUMBER ]; then
-    for i in $(seq 1 $(($count / 2 ))); do
+    for i in $(seq 1 $((count / 2 ))); do
         if [ $i -ne 1 ]; then
             printf "\n"
         fi
@@ -236,7 +238,7 @@ if [ -z $NUMBER ]; then
         check_filesystem "$input" $i
     done
 else
-    if [ $(($NUMBER * 2)) -gt $count ]; then
+    if [ $((NUMBER * 2)) -gt $count ]; then
         fatal "Error, filesystem number $NUMBER not found in image"
     fi
     check_filesystem "$input" $NUMBER
