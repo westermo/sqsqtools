@@ -96,9 +96,11 @@ check_signature() {
         fatal "Signature  : Unsigned"
     fi
 
-    dd if="$input" bs=4096 skip="$offset" count="$size" 2>/dev/null | \
-        openssl dgst -sha256 -verify "$cert" -signature "$sign" &>/dev/null
+    if ! dd if="$input" bs=4096 skip="$offset" count="$size" of="$WORKDIR/data" 2>/dev/null; then
+        fatal "Signature  : Unchecked"
+    fi
 
+    openssl dgst -sha256 -verify "$cert" -signature "$sign" "$WORKDIR/data" >/dev/null
     if [ $? -eq 0 ]; then
         echo "Signature  : Signed"
     else
@@ -144,8 +146,8 @@ check_filesystem() {
 
     sha256sum="$(dd if="$input" bs=4096 skip="$offset" count="$size" 2>/dev/null | sha256sum | cut -d " " -f1)"
 
-    if [[ "$sha256sum" = "$(cat "$WORKDIR/meta/sha256sum" 2>/dev/null)" ]]; then
-        echo "Sha256sum  : OK (${sha256sum:0:12}...)"
+    if [ "$sha256sum" = "$(cat "$WORKDIR/meta/sha256sum" 2>/dev/null)" ]; then
+        echo "Sha256sum  : OK ($sha256sum)"
     else
         fatal "Sha256sum  : Invalid"
     fi
